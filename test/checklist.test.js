@@ -133,3 +133,17 @@ test('repo-wide N/A holds even if the comment line is edited or removed', () => 
   assert.equal(result.complete, true);
   assert.equal(result.notApplicable, 1);
 });
+
+test('every action this repository runs is pinned to a full commit SHA', () => {
+  const root = path.join(__dirname, '..');
+  const workflows = path.join(root, '.github', 'workflows');
+  const files = [
+    path.join(root, 'action.yml'),
+    ...fs.readdirSync(workflows).map((name) => path.join(workflows, name)),
+  ];
+  for (const file of files) {
+    for (const [, ref] of fs.readFileSync(file, 'utf8').matchAll(/^\s*-?\s*uses:\s*(\S+)/gm)) {
+      assert.match(ref, /@[0-9a-f]{40}$/, `${path.relative(root, file)}: ${ref}`);
+    }
+  }
+});
