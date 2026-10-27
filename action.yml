@@ -1,0 +1,25 @@
+name: Codebranch reviewer checklist
+description: >-
+  Posts the reviewer checklist on a pull request and reports a reviewer-checklist
+  commit status that fails until every item is ticked or marked N/A with a reason.
+
+inputs:
+  github-token:
+    description: Token used to comment and set the commit status.
+    default: ${{ github.token }}
+  reset-on-push:
+    description: Reset the checklist to unticked whenever new commits are pushed.
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        RESET_ON_PUSH: ${{ inputs.reset-on-push }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const run = require(`${process.env.ACTION_PATH}/src/main.js`);
+          await run({ github, context, core });
