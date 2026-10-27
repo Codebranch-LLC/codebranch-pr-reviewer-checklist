@@ -2,7 +2,7 @@
 
 [`CHECKLIST.md`](CHECKLIST.md) is the review that a team member other than the author completes before approving a pull request. It covers what CodeRabbit, Minmax/kudos and SonarCloud can't judge.
 
-This repository ships the checklist as a reusable GitHub workflow. On every pull request in a repository that uses it:
+This repository ships the checklist as a GitHub Action. On every pull request in a repository that uses it:
 
 1. A bot comment with the checklist is posted on the PR.
 2. The reviewer edits that comment, ticking each item or replacing its box with `N/A: <reason>`.
@@ -29,10 +29,30 @@ permissions:
 
 jobs:
   checklist:
-    uses: Codebranch-LLC/codebranch-pr-reviewer-checklist/.github/workflows/reviewer-checklist.yml@v1
-    # with:
-    #   reset-on-push: true
+    # Only PR events, and only edits or deletions of the checklist comment itself.
+    if: >-
+      github.event_name == 'pull_request_target' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       github.event.comment.user.login == 'github-actions[bot]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: reviewer-checklist-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: false
+    steps:
+      - uses: Codebranch-LLC/codebranch-pr-reviewer-checklist@<commit-sha> # vX.Y.Z
+        # with:
+        #   reset-on-push: true
 ```
+
+Replace `<commit-sha>` with the full commit SHA of a release, and keep the tag in the comment:
+
+```sh
+git ls-remote https://github.com/Codebranch-LLC/codebranch-pr-reviewer-checklist 'refs/tags/v*'
+```
+
+Always pin the full SHA, never a tag. This action runs with write access to your pull requests, and a tag can be moved to different code. At a pinned SHA everything the action runs is fixed: it reads its own files from that commit, and its one dependency, `actions/github-script`, is itself pinned by SHA. Dependabot's `github-actions` ecosystem updates SHA pins and their version comments.
 
 Then, in the repository's branch ruleset (or branch protection) for `main`:
 
@@ -79,10 +99,10 @@ The file is optional. It is read from the default branch, never from the pull re
 
 Edit `CHECKLIST.md`. Item lines must keep the form `- [ ] **XX-n** text`. The ID is what the parser checks and what repository settings refer to, so don't renumber an item: retire its ID and add a new one. Keep item wording free of stack-specific names; those go in each repository's settings. Run the tests with `npm test`.
 
-Repositories pin `@v1`. To release a change to them, move the tag:
+To release, tag the merge commit on `main` with a new version and push the tag:
 
 ```sh
-git tag -f v1 && git push -f origin v1
+git tag -a v1.1.0 -m v1.1.0 && git push origin v1.1.0
 ```
 
-For a breaking change (new required items that existing PRs would suddenly fail), tag `v2` instead and let repositories opt in.
+Never move or reuse a tag. Repositories pin the SHA and choose when to update. Bump the major version when a change can fail PRs that passed before, such as a new required item.
