@@ -1,0 +1,19 @@
+# Example .github/reviewer-checklist.yml for a Rust (sqlx) + TypeScript web repository.
+# Copy it to the repository and adjust it. It is read from the default branch.
+
+in-this-repo:
+  AC-1: "`GuardedRouter::requires`, or `public` with a stated reason"
+  AC-2: "use cases call `PolicyEnforcer::assert_can`"
+  AC-3: "the verified internal JWT"
+  AC-4: "RLS policies and pgTAP fixtures"
+  IV-1: "Zod schemas in web, typed request DTOs in Rust"
+  IV-3: "an `ApiError` code"
+  SE-1: "no `eval`, `new Function`, `dangerouslySetInnerHTML`, Rust `unsafe`, or `std::process::Command` built from input"
+  SE-2: "only `sqlx::query!` macros or literal queries"
+  EH-1: "`Result` and `?`; no `unwrap`, `expect` or `panic!` outside tests"
+  SD-5: "`crypto.randomUUID` or `getRandomValues` in TypeScript, `OsRng` or `uuidv7()` in Rust and SQL"
+  DP-2: "SonarCloud, `pnpm audit`, `cargo deny` and `trivy fs` on both lockfiles"
+  DP-3: "the accepted-advisories check passes"
+
+# not-applicable:
+#   AC-4: "No database in this repository"

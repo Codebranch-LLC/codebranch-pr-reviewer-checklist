@@ -22,6 +22,7 @@ on:
     types: [edited, deleted]
 
 permissions:
+  contents: read
   issues: write
   pull-requests: write
   statuses: write
@@ -40,11 +41,32 @@ Then, in the repository's branch ruleset (or branch protection) for `main`:
 
 Merge the workflow file to the default branch first. `pull_request_target` and `issue_comment` workflows always run from the default branch.
 
+## Per-repository settings
+
+The checklist states rules without naming a stack. Each repository can say how it meets them, and mark items that never apply to it, in `.github/reviewer-checklist.yml`:
+
+```yaml
+in-this-repo:
+  AC-1: "`GuardedRouter::requires`, or `public` with a stated reason"
+  SE-2: "only `sqlx::query!` macros or literal queries"
+
+not-applicable:
+  AC-4: "No database in this repository"
+```
+
+- `in-this-repo` adds an *In this repo* line under the item in the checklist comment.
+- `not-applicable` fills the item in as N/A with that reason, so reviewers don't repeat it on every PR. Use it only for items that can never apply to the repository. An item that doesn't apply to one PR is still marked N/A by the reviewer, with a reason.
+
+[`examples/rust-sqlx.yml`](examples/rust-sqlx.yml) is a complete example for a Rust (sqlx) and TypeScript repository.
+
+The file is optional. It is read from the default branch, never from the pull request, so a PR can't mark its own items N/A. Only the two sections above are accepted, with one `ID: text` per line. An unknown section, an unknown item ID, a duplicate or an empty value sets the status to `error` and names the line. A change to the file applies to a PR's status on its next event, and to the hints in comments posted after that.
+
 ## How it is enforced
 
 - **The author can't fill it in.** If the PR author edits the checklist comment, the edit is reverted and the run logs a warning.
 - **The PR can't change the rules.** `pull_request_target` runs the workflow from the default branch, so a PR can't edit the workflow to skip the check. The workflow never checks out PR code.
 - **Items can't be deleted.** An item missing from the comment counts as open. Deleting the whole comment makes the workflow post a fresh, unticked one.
+- **Repository-wide N/A comes from the default branch.** Editing a pre-filled N/A line in the comment has no effect.
 - **N/A needs a reason.** `N/A:` with nothing after it, or the literal `N/A: <reason>`, counts as open.
 - **Optional reset on push.** With `reset-on-push: true`, every new push resets the checklist to unticked, so the reviewer reviews the latest commits again.
 
@@ -55,7 +77,7 @@ Merge the workflow file to the default branch first. `pull_request_target` and `
 
 ## Changing the checklist
 
-Edit `CHECKLIST.md`. Item lines must keep the form `- [ ] **XX-n** text`. The ID is what the parser checks. Run the tests with `npm test`.
+Edit `CHECKLIST.md`. Item lines must keep the form `- [ ] **XX-n** text`. The ID is what the parser checks and what repository settings refer to, so don't renumber an item: retire its ID and add a new one. Keep item wording free of stack-specific names; those go in each repository's settings. Run the tests with `npm test`.
 
 Repositories pin `@v1`. To release a change to them, move the tag:
 
