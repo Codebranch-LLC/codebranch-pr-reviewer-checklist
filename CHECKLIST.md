@@ -11,7 +11,7 @@ The reviewer completes this checklist before approving. The reviewer must not be
 
 ---
 
-## 1. Review gate
+## 1. Review gate (mandatory)
 
 - [ ] **RG-1** I am not the author, and before approving I ran the change or read its tests.
 - [ ] **RG-2** If this PR was merged with an admin bypass because no second reviewer was available, the reason is written below, and a reviewer completes this checklist after the merge.
@@ -59,7 +59,7 @@ The reviewer completes this checklist before approving. The reviewer must not be
 ## 8. Concurrency and resource limits
 
 - [ ] **CR-1** There are no TOCTOU races. A check and its write happen in the same transaction or under a row lock.
-- [ ] **CR-2** Shared resources are protected against DoS and abuse with timeouts, pagination limits and rate limits.
+- [ ] **CR-2** Shared resources are protected against DoS and privilege abuse with timeouts, pagination limits and rate limits.
 
 ## 9. Dependencies and static analysis
 
