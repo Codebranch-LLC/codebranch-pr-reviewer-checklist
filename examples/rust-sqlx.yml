@@ -17,3 +17,13 @@ in-this-repo:
 
 # not-applicable:
 #   AC-4: "No database in this repository"
+
+# Items this repository requires ON TOP of the shared checklist. They are posted
+# in their own section and must be ticked (or N/A'd with a reason) exactly like
+# the shared ones. The ID needs three to twelve capital letters, a dash and a
+# number -- the shared checklist uses two letters, so the shapes cannot collide
+# and a reviewer can see at a glance which items are local.
+extra-items:
+  RUST-1: "Every SQL string reaching the database is a `sqlx::query!` macro, so it is checked against the committed schema at compile time"
+  RUST-2: "No layer crate gained a dependency on an outer one (domain <- application <- infrastructure <- presentation)"
+  WEB-1: "No `dark:` prefix on a chromatic colour; status and surface tokens only"

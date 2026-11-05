@@ -15,7 +15,7 @@ const template = fs.readFileSync(path.join(__dirname, '..', 'CHECKLIST.md'), 'ut
 const LIVE = template.replace('**RG-1**', '**RG-1** (live copy)');
 
 function harness({ getContent }) {
-  const calls = { statuses: [], warnings: [], comments: [] };
+  const calls = { statuses: [], warnings: [], comments: [], updates: [] };
   const github = {
     paginate: async () => calls.comments,
     rest: {
@@ -26,7 +26,10 @@ function harness({ getContent }) {
           calls.comments.push(c);
           return { data: c };
         },
-        updateComment: async ({ body }) => ({ data: { id: 1, body, html_url: 'http://c' } }),
+        updateComment: async ({ body }) => {
+          calls.updates.push(body);
+          return { data: { id: 1, body, html_url: 'http://c' } };
+        },
       },
       pulls: {
         get: async () => ({
@@ -101,5 +104,107 @@ test('checklist-ref: pinned makes no API call for the checklist', async () => {
     assert.ok(!h.calls.statuses[0].description.startsWith('[stale'));
   } finally {
     delete process.env.CHECKLIST_REF;
+  }
+});
+
+// Extra items end to end: read from the CONSUMING repository's default branch
+// (never the PR head), posted, counted, and reset on push like any other item.
+
+const { itemIds, parseConfig, render } = require('../src/checklist');
+const SHARED = itemIds(template).length;
+
+const EXTRAS = [
+  'extra-items:',
+  '  REPO-1: "The migration is reversible"',
+  '  TENANCY-2: "Every new query filters by account_id"',
+].join('\n');
+
+const configFor = (p) => (p === 'CHECKLIST.md' ? b64(LIVE) : b64(EXTRAS));
+const tickAll = (body) => body.replace(/^(\s*-\s*)\[ \]/gm, '$1[x]');
+
+test("a repository's extra items are posted, counted, and read from the default branch", async () => {
+  const reads = [];
+  const h = harness({
+    getContent: async ({ path: p, ref }) => {
+      reads.push({ path: p, ref });
+      return configFor(p);
+    },
+  });
+  await run(h);
+
+  const body = h.calls.comments[0].body;
+  assert.ok(body.includes('- [ ] **REPO-1** The migration is reversible'));
+  assert.ok(body.includes('- [ ] **TENANCY-2** Every new query filters by account_id'));
+  assert.match(body, /## Extra items for this repository/);
+  // The section names the file it came from, so a reviewer who disagrees with an
+  // item knows where it is written down.
+  assert.ok(body.includes('.github/reviewer-checklist.yml'));
+
+  assert.equal(h.calls.statuses[0].state, 'failure');
+  assert.ok(
+    h.calls.statuses[0].description.startsWith(`${SHARED + 2} open:`),
+    `extras must be counted; got "${h.calls.statuses[0].description}"`,
+  );
+  assert.equal(h.calls.warnings.length, 0);
+
+  // The config is read from the base repository's DEFAULT BRANCH. Reading it from
+  // the PR head would let a pull request delete the very item written to catch
+  // it, and the gate would go green having asked nothing.
+  assert.equal(reads.find((r) => r.path === '.github/reviewer-checklist.yml').ref, 'main');
+});
+
+test('an extra item nobody ticked keeps the status red with every shared item done', async () => {
+  const h = harness({ getContent: async ({ path: p }) => configFor(p) });
+  const fresh = render(LIVE, parseConfig(EXTRAS, LIVE), '.github/reviewer-checklist.yml');
+  // Tick the shared checklist, leave this repository's own items alone.
+  const sharedTicked = tickAll(fresh.replace(/^- \[ \] \*\*(REPO-1|TENANCY-2)\*\*/gm, '- @@ **$1**'))
+    .replace(/^- @@ \*\*/gm, '- [ ] **');
+  h.calls.comments.push({
+    id: 1,
+    body: sharedTicked,
+    html_url: 'http://c',
+    user: { login: 'github-actions[bot]' },
+  });
+  await run(h);
+
+  assert.equal(h.calls.statuses[0].state, 'failure');
+  assert.equal(h.calls.statuses[0].description, '2 open: REPO-1, TENANCY-2');
+});
+
+test('an invalid extra item blocks the PR with an error status that names the key', async () => {
+  const h = harness({
+    getContent: async ({ path: p }) =>
+      p === 'CHECKLIST.md' ? b64(LIVE) : b64('extra-items:\n  RG-1: "mine now"'),
+  });
+  await run(h);
+
+  assert.equal(h.calls.statuses.length, 1);
+  assert.equal(h.calls.statuses[0].state, 'error');
+  assert.match(h.calls.statuses[0].description, /Invalid \.github\/reviewer-checklist\.yml: line 2/);
+  assert.match(h.calls.warnings[0], /"RG-1"/);
+  assert.equal(h.calls.comments.length, 0, 'no checklist is posted from a broken config');
+});
+
+test('reset-on-push resets the extra items too', async () => {
+  process.env.RESET_ON_PUSH = 'true';
+  try {
+    const h = harness({ getContent: async ({ path: p }) => configFor(p) });
+    h.context.payload.action = 'synchronize';
+    // A checklist completed for the previous head, extras included.
+    h.calls.comments.push({
+      id: 1,
+      body: tickAll(render(LIVE, parseConfig(EXTRAS, LIVE))),
+      html_url: 'http://c',
+      user: { login: 'github-actions[bot]' },
+    });
+    await run(h);
+
+    assert.equal(h.calls.updates.length, 1);
+    assert.ok(h.calls.updates[0].includes('- [ ] **REPO-1** The migration is reversible'));
+    assert.ok(h.calls.updates[0].includes('- [ ] **TENANCY-2**'));
+    assert.equal(h.calls.statuses[0].state, 'failure');
+    assert.ok(h.calls.statuses[0].description.startsWith(`${SHARED + 2} open:`));
+  } finally {
+    delete process.env.RESET_ON_PUSH;
   }
 });

@@ -86,14 +86,35 @@ in-this-repo:
 
 not-applicable:
   AC-4: "No database in this repository"
+
+extra-items:
+  RUST-1: "Every SQL string reaching the database is a `sqlx::query!` macro"
+  TENANCY-2: "Every new query filters by account_id"
 ```
 
 - `in-this-repo` adds an *In this repo* line under the item in the checklist comment.
 - `not-applicable` fills the item in as N/A with that reason, so reviewers don't repeat it on every PR. Use it only for items that can never apply to the repository. An item that doesn't apply to one PR is still marked N/A by the reviewer, with a reason.
+- `extra-items` adds items of the repository's own, **on top of** the shared ones. They are posted in an *Extra items for this repository* section at the end of the comment, and they are required in exactly the same way: tick each one, or replace its box with `N/A: <reason>`. They are counted in the status description, and `reset-on-push` resets them with everything else.
 
 [`examples/rust-sqlx.yml`](examples/rust-sqlx.yml) is a complete example for a Rust (sqlx) and TypeScript repository.
 
-The file is optional. It is read from the default branch, never from the pull request, so a PR can't mark its own items N/A. Only the two sections above are accepted, with one `ID: text` per line. An unknown section, an unknown item ID, a duplicate or an empty value sets the status to `error` and names the line. A change to the file applies to a PR's status on its next event, and to the hints in comments posted after that.
+### Extra item IDs
+
+An extra item's ID is **three to twelve capital letters, a dash and a number** — `REPO-1`, `RUST-2`, `TENANCY-11`. The shared checklist uses exactly **two** letters (`RG`, `AC`, `SE`, `DP`…), so the two shapes cannot overlap: a repository can never override, shadow or duplicate a shared item, and a reviewer can tell which items are local by looking at them. `RG-1` or `AC-3` under `extra-items` is a config error, not a silent override.
+
+Don't renumber an extra item for the same reason you don't renumber a shared one: the ID is what review comments cite. Retire it and add a new one.
+
+`in-this-repo` and `not-applicable` describe shared items only. An extra item already carries its own text, and a repository that wants to stop asking one of its own items deletes it.
+
+### What the file may contain
+
+The file is optional. It is read from the default branch, never from the pull request. For `in-this-repo` and `not-applicable` that stops a PR marking its own items N/A; for `extra-items` it is what stops a pull request **deleting the item that would have caught it** — an item read from the PR head could be removed by the same PR, and the gate would go green having asked nothing. An extra item can therefore only be added or removed by a pull request that was itself reviewed under the checklist.
+
+Only the three sections above are accepted, with one `ID: text` per line. An unknown section, an unknown or unusable item ID, an ID that collides with a shared one, a duplicate, an empty value, or a value over 300 characters sets the status to `error`, names the offending key and says what is wrong with it. That path blocks every pull request in the repository until the file is fixed, which is the point: a checklist gate that fails open is not a gate.
+
+Item text and hints are treated as untrusted input. They land in a Markdown comment that this action re-parses to decide the commit status, so a value is collapsed to one line and `[`, `]`, `<`, `>` and `*` in it are escaped before it is rendered. Without that, text like `[x] **RG-1** done` could forge a checklist line and tick an item nobody read. Backticks and ordinary punctuation are untouched, so `` `sqlx::query!` `` still renders as code.
+
+A change to the file applies to a PR's status on its next event, and to comments posted after that.
 
 ## How it is enforced
 
@@ -101,7 +122,8 @@ The file is optional. It is read from the default branch, never from the pull re
 - **The PR can't change the rules.** `pull_request_target` runs the workflow from the default branch, so a PR can't edit the workflow to skip the check. The workflow never checks out PR code.
 - **Items can't be deleted.** An item missing from the comment counts as open. Deleting the whole comment makes the workflow post a fresh, unticked one.
 - **Repository-wide N/A comes from the default branch.** Editing a pre-filled N/A line in the comment has no effect.
-- **N/A needs a reason.** `N/A:` with nothing after it, or the literal `N/A: <reason>`, counts as open.
+- **N/A needs a reason.** `N/A:` with nothing after it, or the literal `N/A: <reason>`, counts as open. That applies to a repository's extra items too.
+- **A repository's extra items can't be dodged.** They are read from the default branch, counted in the status, and an untouched one keeps the status red with every shared item ticked. Their text can't forge a checklist line, and their IDs can't collide with the shared ones.
 - **Optional reset on push.** With `reset-on-push: true`, every new push resets the checklist to unticked, so the reviewer reviews the latest commits again. Know what the default costs: the status is written per head commit but read from the EXISTING comment, so a checklist completed for commit A is re-stamped green on commit B with nobody having looked at B. That is the same hole "dismiss stale approvals" closes for the approval, so turn the two on together, or leave both off and accept that the gate certifies the review happened, not that it covered the final commit.
 
 ## Limits
@@ -112,7 +134,9 @@ The file is optional. It is read from the default branch, never from the pull re
 
 ## Changing the checklist
 
-Edit `CHECKLIST.md`. Item lines must keep the form `- [ ] **XX-n** text`. The ID is what the parser checks and what repository settings refer to, so don't renumber an item: retire its ID and add a new one. Keep item wording free of stack-specific names; those go in each repository's settings. Run the tests with `npm test`.
+Edit `CHECKLIST.md`. Item lines must keep the form `- [ ] **XX-n** text` — two capital letters, a dash, a number. The ID is what the parser checks and what repository settings refer to, so don't renumber an item: retire its ID and add a new one. Run the tests with `npm test`.
+
+**An item that only applies to one stack does not belong here.** Keep the wording of shared items free of stack-specific names, and put the stack-specific question in that repository's [`extra-items`](#per-repository-settings) instead — that is what the section is for, and what makes this rule followable rather than a counsel of perfection. Two tests hold the line: `the checklist names no specific stack` fails on a name that belongs in a repository's settings, and the example config exercises the other side of it. Before this existed, the only places to put such an item were the shared checklist (where it reads as noise in every other repository) or nowhere; "nowhere" is what usually happened.
 
 To release, tag the merge commit on `main` with a new version and push the tag:
 
