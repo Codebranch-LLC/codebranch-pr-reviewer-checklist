@@ -10,6 +10,46 @@ inputs:
   reset-on-push:
     description: Reset the checklist to unticked whenever new commits are pushed.
     default: 'false'
+  # The three below are facts about the CONSUMING repository, not about the
+  # checklist, so they are inputs rather than constants in src/main.js. The
+  # defaults are what every repository got before they existed, so nothing
+  # changes for a consumer that sets none of them.
+  status-context:
+    description: >-
+      Name of the commit status this action reports, and therefore the context to
+      make required in branch protection. Override it to namespace the gate the way
+      the repository names its other contexts (for example review/checklist), to
+      avoid colliding with an existing context of the same name, or to run two
+      checklists in one repository.
+    default: reviewer-checklist
+  bot-login:
+    description: >-
+      Login that owns the checklist comment. It must match the identity
+      github-token resolves to: the default GITHUB_TOKEN comments as
+      github-actions[bot], a GitHub App installation token as <app-slug>[bot], and
+      a personal access token as the user who owns it. A value that does not match
+      makes the action unable to find the comment it posted, so it posts a new
+      unticked checklist on every event and the status can never go green.
+    default: github-actions[bot]
+  config-path:
+    description: >-
+      Path, in the consuming repository's default branch, to the per-repository
+      settings file (in-this-repo and not-applicable).
+    default: .github/reviewer-checklist.yml
+  checklist-repo:
+    description: >-
+      Repository whose CHECKLIST.md supplies the checklist text, read at run time
+      from its default branch. Leave it alone unless a fork owns the shared
+      checklist: the point of reading it live is that editing the checklist in one
+      place updates every consumer without re-pinning this action.
+    default: Codebranch-LLC/codebranch-pr-reviewer-checklist
+  checklist-ref:
+    description: >-
+      Ref to read CHECKLIST.md from. Empty means that repository's default branch,
+      which is what keeps every consumer on the latest checklist. A branch or tag
+      name freezes the text at that ref; the literal value "pinned" uses the copy
+      baked in at this action's pinned SHA and makes no API call.
+    default: ''
 
 runs:
   using: composite
@@ -18,6 +58,11 @@ runs:
       env:
         ACTION_PATH: ${{ github.action_path }}
         RESET_ON_PUSH: ${{ inputs.reset-on-push }}
+        STATUS_CONTEXT: ${{ inputs.status-context }}
+        BOT_LOGIN: ${{ inputs.bot-login }}
+        CONFIG_PATH: ${{ inputs.config-path }}
+        CHECKLIST_REPO: ${{ inputs.checklist-repo }}
+        CHECKLIST_REF: ${{ inputs.checklist-ref }}
       with:
         github-token: ${{ inputs.github-token }}
         script: |

@@ -11,7 +11,7 @@ const tickAll = (body) => body.replace(/^(\s*-\s*)\[ \]/gm, '$1[x]');
 
 test('reads every item ID from CHECKLIST.md', () => {
   const ids = itemIds(template);
-  assert.equal(ids.length, 29);
+  assert.equal(ids.length, 30);
   assert.equal(new Set(ids).size, ids.length);
   assert.equal(ids[0], 'RG-1');
   assert.equal(ids.at(-1), 'DP-3');
@@ -20,7 +20,7 @@ test('reads every item ID from CHECKLIST.md', () => {
 test('a fresh checklist is incomplete', () => {
   const result = evaluate(template, template);
   assert.equal(result.complete, false);
-  assert.equal(result.open.length, 29);
+  assert.equal(result.open.length, 30);
 });
 
 test('ticking every item completes it, with x or X', () => {
@@ -52,7 +52,7 @@ test('removing an item line leaves it unresolved', () => {
 
 test('describe stays within the commit status limit', () => {
   assert.ok(describe(evaluate(template, template)).length <= 140);
-  assert.equal(describe(evaluate(template, tickAll(template))), 'All 29 items done (29 ticked, 0 N/A)');
+  assert.equal(describe(evaluate(template, tickAll(template))), 'All 30 items done (30 ticked, 0 N/A)');
 });
 
 test('N/A reason can sit before or after the item wording', () => {
@@ -64,8 +64,18 @@ test('N/A reason can sit before or after the item wording', () => {
   assert.deepEqual(evaluate(template, empty).open, ['AC-4']);
 });
 
+// Every name here is one a repository is meant to supply through `in-this-repo`,
+// not one the shared checklist may contain. The list grew because the first
+// version of this guard only held names from examples/rust-sqlx.yml, and so
+// passed while SD-5 said "such as `Math.random`" -- a JavaScript API in a
+// checklist whose own README says to keep item wording free of stack-specific
+// names. A guard that has only ever been seen to pass proves nothing; add the
+// name here in the same change that puts it in an example config.
 test('the checklist names no specific stack', () => {
-  assert.doesNotMatch(template, /GuardedRouter|PolicyEnforcer|pgTAP|ApiError|sqlx|cargo|OsRng|Zod/);
+  assert.doesNotMatch(
+    template,
+    /GuardedRouter|PolicyEnforcer|pgTAP|ApiError|sqlx|cargo|OsRng|Zod|Math\.random|getRandomValues|randomUUID|dangerouslySetInnerHTML|unwrap/,
+  );
 });
 
 test('the Rust/sqlx example config is valid', () => {
@@ -119,7 +129,7 @@ test('render adds hints and fills in repo-wide N/A', () => {
   assert.ok(body.startsWith(MARKER));
   assert.equal(lines[ac1 + 1], '  - _In this repo: `GuardedRouter::requires`_');
   assert.match(lines.find((l) => l.includes('**AC-4**')), /^- N\/A: No database _\(repo setting\)_ \*\*AC-4\*\*/);
-  assert.equal(evaluate(template, body, config).open.length, 28);
+  assert.equal(evaluate(template, body, config).open.length, 29);
   assert.equal(render(template), `${MARKER}\n${template}`);
 });
 

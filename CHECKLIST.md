@@ -1,13 +1,14 @@
 # Reviewer checklist (N+1)
 
 The reviewer completes this checklist before approving. The reviewer must not be the PR author.
+Source: the "+2 Code Reviewer Checklist" from PLC: Code Review Excellence (its last slide).
 
 **How to fill it in**
 
 - Tick every item that applies. If an item does not apply, replace the box with `N/A: <reason>`.
 - Cite item IDs (for example `AC-3`) in review comments and N/A notes.
 - An *In this repo* line under an item names how this repository meets it. Items marked N/A for the whole repository are already filled in.
-- CodeRabbit, Minmax/kudos and SonarCloud findings are supporting evidence only. They don't replace this review. This checklist covers what those tools can't judge: intent, authorization, tenancy, and design.
+- Findings from the repository's automated reviewers and static-analysis gates are supporting evidence only. They don't replace this review. This checklist covers what those tools can't judge: intent, authorization, tenancy, and design.
 
 ---
 
@@ -54,12 +55,13 @@ The reviewer completes this checklist before approving. The reviewer must not be
 - [ ] **SD-2** No hardcoded secrets: keys, passwords, tokens, internal IPs, account IDs or ARNs.
 - [ ] **SD-3** Only modern, vetted cryptography is used (for example the CNSA Suite 2.0 algorithms).
 - [ ] **SD-4** Encrypted data is authenticated before it is decrypted (AEAD, or verify-then-decrypt).
-- [ ] **SD-5** Security-relevant randomness comes from the platform's cryptographic RNG, never a general-purpose one such as `Math.random`.
+- [ ] **SD-5** Security-relevant randomness comes from the platform's cryptographic RNG, never a general-purpose or seeded pseudo-random generator.
 
 ## 8. Concurrency and resource limits
 
 - [ ] **CR-1** There are no TOCTOU races. A check and its write happen in the same transaction or under a row lock.
 - [ ] **CR-2** Shared resources are protected against DoS and privilege abuse with timeouts, pagination limits and rate limits.
+- [ ] **CR-3** No work is issued once per row or per item of a collection where one call over the whole set would do. A request that returns N records does not make its number of queries, remote calls or file reads grow with N.
 
 ## 9. Dependencies and static analysis
 
@@ -72,3 +74,5 @@ The reviewer completes this checklist before approving. The reviewer must not be
 **Admin bypass reason (RG-2 only):**
 
 <!-- Why no second reviewer was available, and who completes this checklist after the merge. -->
+
+NOT CARRIED OVER FROM THE SOURCE CHECKLIST, recorded here so the omission is a decision rather than an oversight: its C/C++ API-misuse, unsigned-typing, compiler-flag/hardening and fault-injection items. They do not apply to a memory-safe, managed stack. A repository that ships C, C++ or hand-written assembly needs them added back here — not left implicit.
