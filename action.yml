@@ -34,7 +34,9 @@ inputs:
   config-path:
     description: >-
       Path, in the consuming repository's default branch, to the per-repository
-      settings file (in-this-repo and not-applicable).
+      settings file (in-this-repo, not-applicable and extra-items). Read from the
+      DEFAULT BRANCH, never from the pull request: extra items read from the head
+      could be deleted by the very pull request they were written to catch.
     default: .github/reviewer-checklist.yml
   checklist-repo:
     description: >-

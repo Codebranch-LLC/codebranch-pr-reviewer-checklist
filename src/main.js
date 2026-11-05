@@ -73,6 +73,13 @@ async function findChecklistComment(github, owner, repo, issueNumber) {
 }
 
 // Read from the default branch so a pull request can't change its own settings.
+//
+// This is load-bearing for `extra-items` in particular, and it is why extra
+// items are NOT read from the pull request's head. An item declared in the head
+// could be deleted by the very pull request it was written to catch: the gate
+// would go green having asked a question the author removed, which is worse than
+// not having the item at all. On the default branch an extra item can only be
+// changed by a pull request that was itself reviewed under the checklist.
 async function loadConfigText(github, owner, repo, ref) {
   try {
     const { data } = await github.rest.repos.getContent({ owner, repo, path: CONFIG_PATH, ref });
@@ -112,7 +119,7 @@ module.exports = async ({ github, context, core }) => {
     core.setFailed(message);
     return;
   }
-  const freshBody = render(template, config);
+  const freshBody = render(template, config, CONFIG_PATH);
 
   let comment = await findChecklistComment(github, owner, repo, number);
 
