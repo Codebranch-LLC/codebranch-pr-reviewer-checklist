@@ -34,6 +34,9 @@ jobs:
     # the marker rather than the commenter's login keeps this condition correct
     # whatever identity `github-token` resolves to, and stops every other bot
     # comment on the PR (preview URLs, coverage reports) from starting this job.
+    # It is a noise filter, not a security boundary: an edit it skips (say, one
+    # that removed the marker) is still caught by the next run that does start,
+    # because every run inspects the comment's edit history.
     if: >-
       github.event_name == 'pull_request_target' ||
       (github.event_name == 'issue_comment' &&
@@ -118,17 +121,20 @@ A change to the file applies to a PR's status on its next event, and to comments
 
 ## How it is enforced
 
-- **The author can't fill it in.** If the PR author edits the checklist comment, the edit is reverted and the run logs a warning.
+- **The author can't fill it in.** If the PR author has edited the checklist comment since the action last wrote it, the next run resets it to a fresh, unticked checklist and logs a warning. That wipes the reviewer's progress too, on purpose: the only body known to be clean is a fresh one. (Before v2.0.1 the edit was "reverted" to the body before it, which the author could stage with an earlier edit — see below.)
+- **Decisions come from the comment's state, not from the event.** The concurrency group keeps one pending run and drops it when a newer one queues, so any single event can go unseen. Each run therefore reads the comment's edit history (who edited it, and whether the PR author did so after the action's last write) and the head commit the checklist was rendered for, instead of trusting the event that started it. A cancelled run never leaves a hole for the next one.
+- **Only the action's own comment is graded.** A comment not written by `bot-login`, or that doesn't start with the marker, is never graded as success.
 - **The PR can't change the rules.** `pull_request_target` runs the workflow from the default branch, so a PR can't edit the workflow to skip the check. The workflow never checks out PR code.
 - **Items can't be deleted.** An item missing from the comment counts as open. Deleting the whole comment makes the workflow post a fresh, unticked one.
 - **Repository-wide N/A comes from the default branch.** Editing a pre-filled N/A line in the comment has no effect.
 - **N/A needs a reason.** `N/A:` with nothing after it, or the literal `N/A: <reason>`, counts as open. That applies to a repository's extra items too.
 - **A repository's extra items can't be dodged.** They are read from the default branch, counted in the status, and an untouched one keeps the status red with every shared item ticked. Their text can't forge a checklist line, and their IDs can't collide with the shared ones.
-- **Optional reset on push.** With `reset-on-push: true`, every new push resets the checklist to unticked, so the reviewer reviews the latest commits again. Know what the default costs: the status is written per head commit but read from the EXISTING comment, so a checklist completed for commit A is re-stamped green on commit B with nobody having looked at B. That is the same hole "dismiss stale approvals" closes for the approval, so turn the two on together, or leave both off and accept that the gate certifies the review happened, not that it covered the final commit.
+- **Optional reset on push.** With `reset-on-push: true`, a checklist rendered for an older head commit is reset to unticked on the next run, whatever event starts it (the comment records its head commit in a hidden line), so the reviewer reviews the latest commits again. A comment posted before v2.0.1 has no such line and is reset once. so the reviewer reviews the latest commits again. Know what the default costs: the status is written per head commit but read from the EXISTING comment, so a checklist completed for commit A is re-stamped green on commit B with nobody having looked at B. That is the same hole "dismiss stale approvals" closes for the approval, so turn the two on together, or leave both off and accept that the gate certifies the review happened, not that it covered the final commit.
 
 ## Limits
 
 - The PR author is the GitHub user who opened the PR. Someone else who pushed commits to the branch can still tick items.
+- The status is an ordinary commit status, so anyone with write access can post a `reviewer-checklist` status through the API. In branch protection (or the ruleset), require the check **from the GitHub Actions app** as its expected source, so a status posted by anyone else doesn't satisfy it.
 - Repository admins can bypass required checks. When that happens, RG-2 asks for the reason and for the checklist to be completed after the merge. Editing the comment after the merge still updates the status.
 - RG-2 therefore assumes a bypass is *possible*. Where branch protection has "Do not allow bypassing the above settings" (`enforce_admins`) on, nobody can bypass, a pull request without a second reviewer is simply unmergeable, and RG-2 can never apply — mark it `not-applicable` for that repository rather than leaving reviewers an item they must N/A on every PR.
 

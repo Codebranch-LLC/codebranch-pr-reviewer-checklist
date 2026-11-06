@@ -234,6 +234,25 @@ function evaluate(template, body, config = EMPTY_CONFIG) {
   return result;
 }
 
+// The head commit a checklist body was rendered for, on the line after MARKER.
+// It is what lets a run notice "the checklist predates this head" without
+// relying on the `synchronize` run having happened: GitHub's concurrency group
+// drops a PENDING run when a newer one queues, so an edit made just after a
+// push can cancel the very run that was meant to reset the checklist. Anyone
+// who can edit the comment can edit this line too; that is fine, because an
+// edit by the PR author resets the checklist anyway (see main.js), and an edit
+// by anyone else is an edit by someone already trusted to tick items.
+const HEAD_LINE = /^<!-- head: ([0-9a-f]{7,64}) -->$/m;
+
+function withHead(body, sha) {
+  if (!body.startsWith(`${MARKER}\n`)) throw new Error('withHead: body must start with the marker line');
+  return `${MARKER}\n<!-- head: ${sha} -->\n${body.slice(MARKER.length + 1)}`;
+}
+
+function headOf(body) {
+  return body.match(HEAD_LINE)?.[1];
+}
+
 function describe(result) {
   if (result.complete) {
     // The shared count is the one that means something across repositories, so
@@ -260,6 +279,8 @@ module.exports = {
   sanitize,
   parseConfig,
   render,
+  withHead,
+  headOf,
   evaluate,
   describe,
   truncate,

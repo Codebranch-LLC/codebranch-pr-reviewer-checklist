@@ -387,3 +387,13 @@ test('a repository with only in-this-repo and not-applicable is byte-for-byte un
   assert.equal(result.notApplicable, 1);
   assert.equal(result.open.length, SHARED - 1);
 });
+
+test('withHead records the head commit on the line after the marker, and headOf reads it back', () => {
+  const { MARKER, withHead, headOf } = require('../src/checklist');
+  const body = withHead(render(template), 'abc1234');
+  assert.ok(body.startsWith(`${MARKER}\n<!-- head: abc1234 -->\n`));
+  assert.equal(headOf(body), 'abc1234');
+  assert.equal(headOf(render(template)), undefined);
+  assert.equal(evaluate(template, tickAll(body)).complete, true, 'the head line must not disturb grading');
+  assert.throws(() => withHead('no marker', 'abc1234'));
+});

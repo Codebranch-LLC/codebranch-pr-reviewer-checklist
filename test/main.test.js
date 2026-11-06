@@ -14,21 +14,34 @@ const run = require('../src/main.js');
 const template = fs.readFileSync(path.join(__dirname, '..', 'CHECKLIST.md'), 'utf8');
 const LIVE = template.replace('**RG-1**', '**RG-1** (live copy)');
 
-function harness({ getContent }) {
-  const calls = { statuses: [], warnings: [], comments: [], updates: [] };
+// `edits` is the comment's edit history as GraphQL returns it, newest first,
+// with bot actors spelled the GraphQL way (no "[bot]" suffix).
+function harness({ getContent, edits = [] }) {
+  const calls = { statuses: [], warnings: [], failed: [], comments: [], updates: [], graphql: [] };
   const github = {
     paginate: async () => calls.comments,
+    graphql: async (query, vars) => {
+      calls.graphql.push(vars);
+      return {
+        node: {
+          userContentEdits: {
+            nodes: edits.map(([editor, editedAt]) => ({ editedAt, editor: editor && { login: editor } })),
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        },
+      };
+    },
     rest: {
       issues: {
         listComments: 'listComments',
         createComment: async ({ body }) => {
-          const c = { id: 1, body, html_url: 'http://c', user: { login: 'github-actions[bot]' } };
+          const c = { id: 1, node_id: 'IC_1', body, html_url: 'http://c', user: { login: 'github-actions[bot]' } };
           calls.comments.push(c);
           return { data: c };
         },
         updateComment: async ({ body }) => {
           calls.updates.push(body);
-          return { data: { id: 1, body, html_url: 'http://c' } };
+          return { data: { id: 1, node_id: 'IC_1', body, html_url: 'http://c', user: { login: 'github-actions[bot]' } } };
         },
       },
       pulls: {
@@ -46,7 +59,14 @@ function harness({ getContent }) {
       },
     },
   };
-  const core = { warning: (m) => calls.warnings.push(m), info: () => {}, setFailed: (m) => calls.warnings.push(m) };
+  const core = {
+    warning: (m) => calls.warnings.push(m),
+    info: () => {},
+    setFailed: (m) => {
+      calls.warnings.push(m);
+      calls.failed.push(m);
+    },
+  };
   const context = { repo: { owner: 'o', repo: 'r' }, eventName: 'pull_request_target', payload: { action: 'opened', pull_request: { number: 7 } } };
   return { github, core, context, calls };
 }
@@ -207,4 +227,188 @@ test('reset-on-push resets the extra items too', async () => {
   } finally {
     delete process.env.RESET_ON_PUSH;
   }
+});
+
+// The author must never be able to turn the gate green, whatever order their
+// edits arrive in and whichever runs GitHub cancels. Every case below is a
+// sequence that worked against v2.0.0.
+
+const { MARKER, withHead, headOf } = require('../src/checklist');
+const HEAD = 'deadbeef';
+const noConfig = async ({ path: p }) => {
+  if (p === 'CHECKLIST.md') return b64(LIVE);
+  const e = new Error('no config');
+  e.status = 404;
+  throw e;
+};
+const fresh = () => withHead(render(LIVE), HEAD);
+const seed = (h, body, login = 'github-actions[bot]') =>
+  h.calls.comments.push({ id: 1, node_id: 'IC_1', body, html_url: 'http://c', user: { login } });
+const asEdit = (h, sender, from) => {
+  h.context.eventName = 'issue_comment';
+  h.context.payload = {
+    action: 'edited',
+    issue: { number: 7, pull_request: {} },
+    comment: { id: 1 },
+    sender: { login: sender },
+    changes: { body: { from } },
+  };
+};
+
+test('an author edit resets to a fresh checklist and never restores the body before it', async () => {
+  // The two-edit trick: edit 1 ticked everything and stripped the marker, so the
+  // workflow's `if:` skipped it; edit 2 put the marker back. v2.0.0 "reverted"
+  // edit 2 by restoring edit 1 -- the fully ticked body -- and posted success.
+  const ticked = tickAll(render(LIVE)).slice(MARKER.length + 1);
+  const h = harness({
+    getContent: noConfig,
+    edits: [
+      ['author', '2026-11-06T10:02:00Z'],
+      ['author', '2026-11-06T10:01:00Z'],
+      ['github-actions', '2026-11-06T10:00:00Z'],
+    ],
+  });
+  seed(h, `${MARKER}\n${ticked}`);
+  asEdit(h, 'author', ticked);
+  await run(h);
+
+  assert.equal(h.calls.updates.length, 1);
+  assert.equal(h.calls.updates[0], fresh(), 'must reset to a fresh body, not restore changes.body.from');
+  assert.equal(h.calls.statuses[0].state, 'failure');
+  assert.match(h.calls.warnings[0], /@author authored this PR/);
+});
+
+test("an author edit whose own run was cancelled is still caught by the next run", async () => {
+  // Author ticks everything; that run is cancelled while pending. A reviewer then
+  // edits on top. The run that does execute was started by the REVIEWER's edit,
+  // so nothing in its payload points at the author -- only the history does.
+  const h = harness({
+    getContent: noConfig,
+    edits: [
+      ['reviewer', '2026-11-06T10:02:00Z'],
+      ['author', '2026-11-06T10:01:00Z'],
+      ['github-actions', '2026-11-06T10:00:00Z'],
+    ],
+  });
+  seed(h, tickAll(fresh()));
+  asEdit(h, 'reviewer', tickAll(fresh()));
+  await run(h);
+
+  assert.equal(h.calls.updates.length, 1);
+  assert.equal(h.calls.statuses[0].state, 'failure');
+  assert.deepEqual(h.calls.graphql[0], { id: 'IC_1', after: null });
+});
+
+test('an author edit is caught on a run that was not started by an edit at all', async () => {
+  const h = harness({ getContent: noConfig, edits: [['author', '2026-11-06T10:01:00Z'], ['github-actions', '2026-11-06T10:00:00Z']] });
+  seed(h, tickAll(fresh()));
+  h.context.payload.action = 'reopened';
+  await run(h);
+
+  assert.equal(h.calls.updates.length, 1);
+  assert.equal(h.calls.statuses[0].state, 'failure');
+});
+
+test('an author edit the bot has already reset is not held against the reviewer', async () => {
+  const h = harness({
+    getContent: noConfig,
+    edits: [
+      ['reviewer', '2026-11-06T10:03:00Z'],
+      ['github-actions', '2026-11-06T10:02:00Z'],
+      ['author', '2026-11-06T10:01:00Z'],
+      ['github-actions', '2026-11-06T10:00:00Z'],
+    ],
+  });
+  seed(h, tickAll(fresh()));
+  asEdit(h, 'reviewer', fresh());
+  await run(h);
+
+  assert.equal(h.calls.updates.length, 0);
+  assert.equal(h.calls.statuses[0].state, 'success');
+  assert.equal(h.calls.warnings.length, 0);
+});
+
+test('a reviewer completing the checklist turns it green', async () => {
+  const h = harness({ getContent: noConfig, edits: [['reviewer', '2026-11-06T10:01:00Z'], ['github-actions', '2026-11-06T10:00:00Z']] });
+  seed(h, tickAll(fresh()));
+  asEdit(h, 'reviewer', fresh());
+  await run(h);
+
+  assert.equal(h.calls.updates.length, 0);
+  assert.equal(h.calls.statuses[0].state, 'success');
+});
+
+test('a bot PR author is matched across the REST and GraphQL spellings of its login', async () => {
+  const h = harness({ getContent: noConfig, edits: [['dependabot', '2026-11-06T10:01:00Z'], ['github-actions', '2026-11-06T10:00:00Z']] });
+  const pulls = h.github.rest.pulls.get;
+  h.github.rest.pulls.get = async (a) => {
+    const r = await pulls(a);
+    r.data.user.login = 'dependabot[bot]';
+    return r;
+  };
+  seed(h, tickAll(fresh()));
+  await run(h);
+
+  assert.equal(h.calls.updates.length, 1);
+  assert.equal(h.calls.statuses[0].state, 'failure');
+});
+
+test('reset-on-push resets on ANY run once the head moved, so a cancelled synchronize run is not a bypass', async () => {
+  // Push, then an edit queues behind it and cancels the pending synchronize run.
+  // The edit's run must still notice the checklist was rendered for another head.
+  process.env.RESET_ON_PUSH = 'true';
+  try {
+    const h = harness({ getContent: noConfig, edits: [['reviewer', '2026-11-06T10:01:00Z'], ['github-actions', '2026-11-06T10:00:00Z']] });
+    const stale = tickAll(withHead(render(LIVE), 'cafe1234'));
+    seed(h, stale);
+    asEdit(h, 'reviewer', stale);
+    await run(h);
+
+    assert.equal(h.calls.updates.length, 1);
+    assert.equal(headOf(h.calls.updates[0]), HEAD);
+    assert.equal(h.calls.statuses[0].state, 'failure');
+  } finally {
+    delete process.env.RESET_ON_PUSH;
+  }
+});
+
+test('reset-on-push keeps a checklist completed for the current head', async () => {
+  process.env.RESET_ON_PUSH = 'true';
+  try {
+    const h = harness({ getContent: noConfig, edits: [['reviewer', '2026-11-06T10:01:00Z'], ['github-actions', '2026-11-06T10:00:00Z']] });
+    seed(h, tickAll(fresh()));
+    asEdit(h, 'reviewer', fresh());
+    await run(h);
+
+    assert.equal(h.calls.updates.length, 0);
+    assert.equal(h.calls.statuses[0].state, 'success');
+  } finally {
+    delete process.env.RESET_ON_PUSH;
+  }
+});
+
+test('without reset-on-push, a checklist from another head is left alone', async () => {
+  const h = harness({ getContent: noConfig });
+  seed(h, tickAll(withHead(render(LIVE), 'cafe1234')));
+  h.context.payload.action = 'synchronize';
+  await run(h);
+
+  assert.equal(h.calls.updates.length, 0);
+  assert.equal(h.calls.statuses[0].state, 'success');
+});
+
+test('a comment the bot did not write is never graded', async () => {
+  // Defence in depth: findChecklistComment only returns the bot's comments, so
+  // this is what a mistake in the selection logic would look like.
+  const h = harness({ getContent: noConfig });
+  h.github.paginate = async () => [
+    { id: 1, node_id: 'IC_1', body: tickAll(fresh()), html_url: 'http://c', user: { login: 'author' } },
+  ];
+  h.github.rest.issues.createComment = async ({ body }) => ({
+    data: { id: 2, node_id: 'IC_2', body: tickAll(body), html_url: 'http://c', user: { login: 'author' } },
+  });
+  await run(h);
+
+  assert.equal(h.calls.statuses[0].state, 'failure');
+  assert.match(h.calls.failed[0], /refusing to grade/);
 });
