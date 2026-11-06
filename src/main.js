@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { MARKER, parseConfig, render, evaluate, describe, truncate } = require('./checklist');
+const { MARKER, parseConfig, render, withHead, headOf, evaluate, describe, truncate } = require('./checklist');
 
 // Each of these describes the CONSUMING repository, not the checklist, so each
 // is an action input (see action.yml) with the value every repository had before
@@ -72,6 +72,48 @@ async function findChecklistComment(github, owner, repo, issueNumber) {
   return comments.find((c) => c.user?.login === BOT_LOGIN && c.body?.startsWith(MARKER));
 }
 
+// GraphQL reports bot actors without the "[bot]" suffix REST uses
+// (`github-actions[bot]` is `github-actions` in an edit's `editor`), so both
+// sides are compared without it.
+const actor = (login) => (login || '').replace(/\[bot\]$/, '');
+
+// Has the PR author edited the comment since the bot last wrote it?
+//
+// Read from the comment's edit history, newest first, rather than from the
+// event: a run must catch an author edit even when the run that edit started
+// was cancelled, or when a reviewer's edit landed on top of it. The history
+// lists the creation as an edit once the comment has been edited at all; a
+// comment that was never edited has an empty history and nothing to catch.
+async function authorEditedSinceBot(github, comment, prAuthor) {
+  const author = actor(prAuthor);
+  const bot = actor(BOT_LOGIN);
+  let after = null;
+  for (;;) {
+    const data = await github.graphql(
+      `query($id: ID!, $after: String) {
+        node(id: $id) {
+          ... on IssueComment {
+            userContentEdits(first: 100, after: $after) {
+              nodes { editedAt editor { login } }
+              pageInfo { hasNextPage endCursor }
+            }
+          }
+        }
+      }`,
+      { id: comment.node_id, after },
+    );
+    const edits = data.node.userContentEdits;
+    const nodes = [...edits.nodes].sort((a, b) => Date.parse(b.editedAt) - Date.parse(a.editedAt));
+    for (const edit of nodes) {
+      const editor = actor(edit.editor?.login);
+      if (editor === bot) return false;
+      if (editor === author) return true;
+    }
+    if (!edits.pageInfo.hasNextPage) return false;
+    after = edits.pageInfo.endCursor;
+  }
+}
+
 // Read from the default branch so a pull request can't change its own settings.
 //
 // This is load-bearing for `extra-items` in particular, and it is why extra
@@ -95,8 +137,6 @@ module.exports = async ({ github, context, core }) => {
   const resetOnPush = process.env.RESET_ON_PUSH === 'true';
 
   const { owner, repo } = context.repo;
-  const { eventName } = context;
-  const { action } = context.payload;
   const number = context.payload.pull_request?.number ?? context.payload.issue?.number;
   const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: number });
 
@@ -119,21 +159,34 @@ module.exports = async ({ github, context, core }) => {
     core.setFailed(message);
     return;
   }
-  const freshBody = render(template, config, CONFIG_PATH);
+  const freshBody = withHead(render(template, config, CONFIG_PATH), pr.head.sha);
 
   let comment = await findChecklistComment(github, owner, repo, number);
 
-  if (eventName === 'issue_comment' && action === 'edited' && comment?.id === context.payload.comment.id) {
-    const editor = context.payload.sender.login;
-    const previousBody = context.payload.changes?.body?.from;
-    if (editor === pr.user.login && previousBody !== undefined) {
-      ({ data: comment } = await github.rest.issues.updateComment({
-        owner,
-        repo,
-        comment_id: comment.id,
-        body: previousBody,
-      }));
-      core.warning(`@${editor} authored this PR and cannot fill in the reviewer checklist. The edit was reverted.`);
+  // Every decision below is made from the comment as it is NOW, never from the
+  // event that started this run. Runs are not guaranteed to happen: the
+  // concurrency group keeps one pending run and drops it when a newer one
+  // queues, so an author's edit or a push can go unseen by any run of its own.
+  // A rule that only acts on "the event I was started for" therefore has a hole
+  // the size of every cancelled run; a rule that inspects the state does not.
+  let resetReason;
+  if (comment) {
+    if (await authorEditedSinceBot(github, comment, pr.user.login)) {
+      // Never "revert" to the body before the edit. That body is not known to
+      // be the bot's: the author can stage it with an earlier edit (one that
+      // removed the marker, so no run saw it, or one whose run was cancelled)
+      // and have the revert restore a fully ticked checklist. The only body
+      // known to be clean is a fresh one, so the author's edit costs the
+      // reviewer's progress too -- which is the right incentive not to touch it.
+      resetReason = 'author-edit';
+      core.warning(
+        `@${pr.user.login} authored this PR and cannot fill in the reviewer checklist. ` +
+          'Their edit reset the checklist; the reviewer must complete it again.',
+      );
+    } else if (resetOnPush && headOf(comment.body) !== pr.head.sha) {
+      // Covers the push whose `synchronize` run was cancelled, and a comment
+      // written before the head line existed (reset once, rather than guess).
+      resetReason = 'new-head';
     }
   }
 
@@ -144,13 +197,31 @@ module.exports = async ({ github, context, core }) => {
       issue_number: number,
       body: freshBody,
     }));
-  } else if (eventName === 'pull_request_target' && action === 'synchronize' && resetOnPush) {
+  } else if (resetReason) {
     ({ data: comment } = await github.rest.issues.updateComment({
       owner,
       repo,
       comment_id: comment.id,
       body: freshBody,
     }));
+  }
+
+  // Only the bot's own, marked comment can certify anything. After the logic
+  // above this always holds; the check is here so that a mistake in that logic
+  // fails closed instead of grading whatever body it was handed.
+  if (comment.user?.login !== BOT_LOGIN || !comment.body?.startsWith(MARKER)) {
+    const message = `The checklist comment is not one ${BOT_LOGIN} wrote; refusing to grade it.`;
+    await github.rest.repos.createCommitStatus({
+      owner,
+      repo,
+      sha: pr.head.sha,
+      state: 'failure',
+      context: STATUS_CONTEXT,
+      description: truncate(message),
+      target_url: comment.html_url,
+    });
+    core.setFailed(message);
+    return;
   }
 
   const result = evaluate(template, comment.body, config);
