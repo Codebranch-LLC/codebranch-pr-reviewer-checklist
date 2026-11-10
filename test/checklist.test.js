@@ -20,16 +20,16 @@ const tickAll = (body) => body.replace(/^(\s*-\s*)\[ \]/gm, '$1[x]');
 
 test('reads every item ID from CHECKLIST.md', () => {
   const ids = itemIds(template);
-  assert.equal(ids.length, 30);
+  assert.equal(ids.length, 31);
   assert.equal(new Set(ids).size, ids.length);
   assert.equal(ids[0], 'RG-1');
-  assert.equal(ids.at(-1), 'DP-3');
+  assert.equal(ids.at(-1), 'DP-4');
 });
 
 test('a fresh checklist is incomplete', () => {
   const result = evaluate(template, template);
   assert.equal(result.complete, false);
-  assert.equal(result.open.length, 30);
+  assert.equal(result.open.length, 31);
 });
 
 test('ticking every item completes it, with x or X', () => {
@@ -61,7 +61,7 @@ test('removing an item line leaves it unresolved', () => {
 
 test('describe stays within the commit status limit', () => {
   assert.ok(describe(evaluate(template, template)).length <= 140);
-  assert.equal(describe(evaluate(template, tickAll(template))), 'All 30 items done (30 ticked, 0 N/A)');
+  assert.equal(describe(evaluate(template, tickAll(template))), 'All 31 items done (31 ticked, 0 N/A)');
 });
 
 test('N/A reason can sit before or after the item wording', () => {
@@ -140,7 +140,7 @@ test('render adds hints and fills in repo-wide N/A', () => {
   assert.ok(body.startsWith(MARKER));
   assert.equal(lines[ac1 + 1], '  - _In this repo: `GuardedRouter::requires`_');
   assert.match(lines.find((l) => l.includes('**AC-4**')), /^- N\/A: No database _\(repo setting\)_ \*\*AC-4\*\*/);
-  assert.equal(evaluate(template, body, config).open.length, 29);
+  assert.equal(evaluate(template, body, config).open.length, 30);
   assert.equal(render(template), `${MARKER}\n${template}`);
 });
 
