@@ -68,6 +68,7 @@ Source: the "+2 Code Reviewer Checklist" from PLC: Code Review Excellence (its l
 - [ ] **DP-1** No dependency with a known vulnerability was added, and I reviewed every dependency bump.
 - [ ] **DP-2** SCA is clean. The repo's dependency and static-analysis scanners report no unresolved critical or high findings, on every lockfile.
 - [ ] **DP-3** Every accepted scanner exception is current and justified.
+- [ ] **DP-4** No static-analysis issue raised on this PR's changes was dismissed (accepted, won't-fix or false positive) instead of fixed. A genuine false positive is suppressed in code with a stated reason that I reviewed.
 
 ---
 
