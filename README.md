@@ -86,7 +86,7 @@ Merge the workflow file to the default branch first. `pull_request_target` and `
 
 The checklist alone can't prove that. If the author starts the agent on their own machine, the author also chooses its GitHub account, its prompt and the diff it sees. With a second account, the author could even tick the boxes by hand. To make independence something the action checks, set the following up:
 
-1. **Run the agent from a workflow, not from a laptop.** Use a job on the default branch (for example `workflow_dispatch` or `pull_request_target`) with a fixed prompt that points the agent at this PR's checklist comment. The agent then fetches the diff for the head commit itself. Run it with read access to the code and without deployment secrets: RG-1 has it run the PR's tests, and that is untrusted code.
+1. **Run the agent from a workflow, not from a laptop.** Use a job on the default branch (for example `workflow_dispatch` or `pull_request_target`) with a fixed prompt that points the agent at this PR's checklist comment. The agent then fetches the diff for the head commit itself. Run it with read access to the code and without deployment secrets. The agent does not run the PR's tests; CI does.
 2. **Give it its own account, and list it in `reviewer-logins`.** Use a GitHub App or machine user that only that workflow can use. An edit by any account that isn't listed resets the checklist, just as an author edit always does. The PR author is never a reviewer, even if listed.
 3. **Set `signing-key`** to a repository secret. Without it, an account that can edit the comment can set the hidden head-commit line to a commit it is about to push, and the reset on that push never happens.
 4. **Keep requiring an approval** from a CODEOWNER other than the agent's account.
