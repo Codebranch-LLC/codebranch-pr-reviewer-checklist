@@ -4,9 +4,22 @@ const MARKER = '<!-- codebranch-reviewer-checklist -->';
 // Matches both a shared item ID (RG-1) and a repository-supplied one (REPO-1).
 const ITEM_ID = /\*\*([A-Z]{2,12}-\d+)\*\*/;
 const UNTICKED = /^(\s*-\s*)\[ \]/;
-const TICKED = /^\s*[-*]\s*\[[xX]\]/;
-// "N/A:" followed by a real reason, not the "<reason>" placeholder.
-const NOT_APPLICABLE = /N\/A:\s*(?!<reason>)\S/;
+// A line is graded only if it has the exact shape of an item line: unindented,
+// a box or an "N/A: <reason>", and THEN the item ID. Anything else -- a note, a
+// sub-bullet, a reason that mentions another ID in bold -- is never read as an
+// item, so it cannot tick, untick or N/A one. The reason may not contain "*"
+// (unless escaped, as sanitize() writes it), so the first **ID** after "N/A:" is
+// always the item's own.
+const ITEM_LINE = /^[-*][ \t]+(?:\[([ xX])\]|N\/A:((?:[^*\\\n]|\\.)*?))[ \t]*\*\*([A-Z]{2,12}-\d+)\*\*/;
+// HTML comments are invisible on GitHub. A tick line inside one would turn the
+// status green while every box a human can see is open, so they are removed
+// before grading. An unclosed "<!--" swallows the rest of the body: fail closed.
+const HTML_COMMENT = /<!--[\s\S]*?(?:-->|$)/g;
+// An item whose wording says this can never be N/A, by a reviewer or by a
+// repository's `not-applicable` setting.
+const ALWAYS_APPLIES = 'This item always applies.';
+// An N/A reason must state a fact, not just exist: at least this many words.
+const MIN_REASON_WORDS = 3;
 const STATUS_DESCRIPTION_LIMIT = 140;
 const CONFIG_SECTIONS = {
   'in-this-repo': 'inThisRepo',
@@ -43,6 +56,35 @@ function items(template) {
 
 function itemIds(template) {
   return [...items(template).keys()];
+}
+
+// Shared items that can never be N/A.
+function alwaysApplies(template) {
+  return new Set([...items(template)].filter(([, text]) => text.includes(ALWAYS_APPLIES)).map(([id]) => id));
+}
+
+function realReason(reason) {
+  const text = (reason || '').trim();
+  return text !== '' && text !== '<reason>' && text.split(/\s+/).length >= MIN_REASON_WORDS;
+}
+
+// The graded item lines of a comment body, keyed by ID. An ID that appears on
+// more than one item line is ambiguous and is recorded as such: it counts as
+// open, so a second, ticked copy of a line can never win over the real one.
+function itemLines(body) {
+  const lines = new Map();
+  for (const line of body.replace(HTML_COMMENT, '').split('\n')) {
+    const match = line.match(ITEM_LINE);
+    if (!match) continue;
+    const [, box, reason, id] = match;
+    lines.set(
+      id,
+      lines.has(id)
+        ? { duplicate: true }
+        : { ticked: box !== undefined && box !== ' ', reason: box === undefined ? reason : undefined },
+    );
+  }
+  return lines;
 }
 
 function unquote(raw) {
@@ -111,6 +153,7 @@ function sanitize(raw) {
 // Anything else is an error, so a typo can't silently drop a setting.
 function parseConfig(text, template) {
   const known = new Set(itemIds(template));
+  const always = alwaysApplies(template);
   const config = { inThisRepo: new Map(), notApplicable: new Map(), extraItems: new Map() };
   let section = null;
 
@@ -153,6 +196,9 @@ function parseConfig(text, template) {
       throw new Error(`${where}: ${id} is not a checklist item.${hint}`);
     }
 
+    if (section === 'notApplicable' && always.has(id)) {
+      throw new Error(`${where}: ${id} always applies and cannot be marked not applicable`);
+    }
     if (config[section].has(id)) throw new Error(`${where}: ${id} is listed twice`);
     const value = unquote(raw);
     if (!value) throw new Error(`${where}: ${id} needs text`);
@@ -205,20 +251,22 @@ function render(template, config = EMPTY_CONFIG, configPath = DEFAULT_CONFIG_PAT
   return `${MARKER}\n${output.join('\n')}`;
 }
 
-// What the reviewer wrote on the line, without the ID and the item's own wording.
-function reviewerText(line, id, wording) {
-  return line.replace(`**${id}**`, '').replace(wording, '');
+// Does the comment carry exactly the items the checklist has now? When the
+// shared checklist or the repository's extra items change, a comment posted
+// before the change cannot be completed (its reviewer has no line for the new
+// item), so the caller re-posts it.
+function sameItems(template, body, config = EMPTY_CONFIG) {
+  const expected = [...allItems(template, config).keys()].sort();
+  const actual = [...itemLines(body).keys()].sort();
+  return expected.length === actual.length && expected.every((id, i) => id === actual[i]);
 }
 
 function evaluate(template, body, config = EMPTY_CONFIG) {
-  const lines = new Map();
-  for (const line of body.split('\n')) {
-    const match = line.match(ITEM_ID);
-    if (match && !lines.has(match[1])) lines.set(match[1], line);
-  }
+  const lines = itemLines(body);
+  const always = alwaysApplies(template);
 
   const result = { total: 0, shared: 0, extra: 0, ticked: 0, notApplicable: 0, open: [], missing: [] };
-  for (const [id, wording] of allItems(template, config)) {
+  for (const id of allItems(template, config).keys()) {
     result.total++;
     if (config.extraItems.has(id)) result.extra++;
     else result.shared++;
@@ -226,8 +274,9 @@ function evaluate(template, body, config = EMPTY_CONFIG) {
     // Repo-wide N/A comes from the default branch, not from the comment.
     if (config.notApplicable.has(id)) result.notApplicable++;
     else if (line === undefined) result.missing.push(id);
-    else if (TICKED.test(line)) result.ticked++;
-    else if (NOT_APPLICABLE.test(reviewerText(line, id, wording))) result.notApplicable++;
+    else if (line.duplicate) result.open.push(id);
+    else if (line.ticked) result.ticked++;
+    else if (line.reason !== undefined && !always.has(id) && realReason(line.reason)) result.notApplicable++;
     else result.open.push(id);
   }
   result.complete = result.open.length === 0 && result.missing.length === 0;
@@ -242,15 +291,27 @@ function evaluate(template, body, config = EMPTY_CONFIG) {
 // who can edit the comment can edit this line too; that is fine, because an
 // edit by the PR author resets the checklist anyway (see main.js), and an edit
 // by anyone else is an edit by someone already trusted to tick items.
-const HEAD_LINE = /^<!-- head: ([0-9a-f]{7,64}) -->$/m;
+//
+// "Anyone else is already trusted" stops holding once the reviewer is an agent
+// whoever opened the PR can start: that person also picks the account it edits
+// with, and could set this line to the SHA of a commit they have not pushed yet,
+// so the push that follows never resets the checklist. With a `signing-key`, the
+// line also carries an HMAC of the SHA that only this action can compute, and a
+// line whose signature does not verify counts as rendered for another head.
+const HEAD_LINE = /^<!-- head: ([0-9a-f]{7,64})(?: sig: ([0-9a-f]{64}))? -->$/m;
 
-function withHead(body, sha) {
+function withHead(body, sha, sig) {
   if (!body.startsWith(`${MARKER}\n`)) throw new Error('withHead: body must start with the marker line');
-  return `${MARKER}\n<!-- head: ${sha} -->\n${body.slice(MARKER.length + 1)}`;
+  const signature = sig ? ` sig: ${sig}` : '';
+  return `${MARKER}\n<!-- head: ${sha}${signature} -->\n${body.slice(MARKER.length + 1)}`;
 }
 
 function headOf(body) {
   return body.match(HEAD_LINE)?.[1];
+}
+
+function signatureOf(body) {
+  return body.match(HEAD_LINE)?.[2];
 }
 
 function describe(result) {
@@ -276,6 +337,9 @@ module.exports = {
   MARKER,
   MAX_ITEM_CHARS,
   itemIds,
+  alwaysApplies,
+  sameItems,
+  signatureOf,
   sanitize,
   parseConfig,
   render,

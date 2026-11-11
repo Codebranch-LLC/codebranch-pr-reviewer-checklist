@@ -139,6 +139,7 @@ const EXTRAS = [
   '  TENANCY-2: "Every new query filters by account_id"',
 ].join('\n');
 
+const { withHead } = require('../src/checklist');
 const configFor = (p) => (p === 'CHECKLIST.md' ? b64(LIVE) : b64(EXTRAS));
 const tickAll = (body) => body.replace(/^(\s*-\s*)\[ \]/gm, '$1[x]');
 
@@ -181,7 +182,7 @@ test('an extra item nobody ticked keeps the status red with every shared item do
     .replace(/^- @@ \*\*/gm, '- [ ] **');
   h.calls.comments.push({
     id: 1,
-    body: sharedTicked,
+    body: withHead(sharedTicked, 'deadbeef'),
     html_url: 'http://c',
     user: { login: 'github-actions[bot]' },
   });
@@ -233,7 +234,7 @@ test('reset-on-push resets the extra items too', async () => {
 // edits arrive in and whichever runs GitHub cancels. Every case below is a
 // sequence that worked against v2.0.0.
 
-const { MARKER, withHead, headOf } = require('../src/checklist');
+const { MARKER, headOf } = require('../src/checklist');
 const HEAD = 'deadbeef';
 const noConfig = async ({ path: p }) => {
   if (p === 'CHECKLIST.md') return b64(LIVE);
@@ -387,14 +388,136 @@ test('reset-on-push keeps a checklist completed for the current head', async () 
   }
 });
 
-test('without reset-on-push, a checklist from another head is left alone', async () => {
+test("with reset-on-push: 'false', a checklist from another head is left alone", async () => {
+  process.env.RESET_ON_PUSH = 'false';
+  try {
+    const h = harness({ getContent: noConfig });
+    seed(h, tickAll(withHead(render(LIVE), 'cafe1234')));
+    h.context.payload.action = 'synchronize';
+    await run(h);
+
+    assert.equal(h.calls.updates.length, 0);
+    assert.equal(h.calls.statuses[0].state, 'success');
+  } finally {
+    delete process.env.RESET_ON_PUSH;
+  }
+});
+
+test('reset-on-push is on by default', async () => {
   const h = harness({ getContent: noConfig });
   seed(h, tickAll(withHead(render(LIVE), 'cafe1234')));
   h.context.payload.action = 'synchronize';
   await run(h);
 
-  assert.equal(h.calls.updates.length, 0);
-  assert.equal(h.calls.statuses[0].state, 'success');
+  assert.equal(h.calls.updates.length, 1);
+  assert.equal(h.calls.statuses[0].state, 'failure');
+});
+
+test('a comment posted before the checklist gained an item is re-posted, not left red for good', async () => {
+  const h = harness({ getContent: noConfig });
+  const old = tickAll(fresh()).split('\n').filter((l) => !l.includes('**LG-1**')).join('\n');
+  seed(h, old);
+  await run(h);
+
+  assert.equal(h.calls.updates.length, 1);
+  assert.equal(h.calls.updates[0], fresh());
+  assert.equal(h.calls.statuses[0].state, 'failure');
+});
+
+// --- reviewer-logins ---------------------------------------------------------
+
+test('with reviewer-logins set, an edit by any other account resets the checklist', async () => {
+  process.env.REVIEWER_LOGINS = 'review-agent[bot], second-reviewer';
+  try {
+    const h = harness({
+      getContent: noConfig,
+      edits: [['author-alt', '2026-11-06T10:01:00Z'], ['github-actions', '2026-11-06T10:00:00Z']],
+    });
+    seed(h, tickAll(fresh()));
+    await run(h);
+
+    assert.equal(h.calls.updates.length, 1);
+    assert.equal(h.calls.updates[0], fresh());
+    assert.equal(h.calls.statuses[0].state, 'failure');
+    assert.match(h.calls.warnings[0], /@author-alt is not one of this repository's reviewer-logins/);
+  } finally {
+    delete process.env.REVIEWER_LOGINS;
+  }
+});
+
+test('with reviewer-logins set, a listed reviewer completing the checklist turns it green', async () => {
+  process.env.REVIEWER_LOGINS = 'review-agent[bot]';
+  try {
+    // GraphQL spells the bot without "[bot]"; the allowlist matches either way.
+    const h = harness({
+      getContent: noConfig,
+      edits: [['review-agent', '2026-11-06T10:01:00Z'], ['github-actions', '2026-11-06T10:00:00Z']],
+    });
+    seed(h, tickAll(fresh()));
+    await run(h);
+
+    assert.equal(h.calls.updates.length, 0);
+    assert.equal(h.calls.statuses[0].state, 'success');
+  } finally {
+    delete process.env.REVIEWER_LOGINS;
+  }
+});
+
+test('the PR author is never a reviewer, even when listed in reviewer-logins', async () => {
+  process.env.REVIEWER_LOGINS = 'author';
+  try {
+    const h = harness({
+      getContent: noConfig,
+      edits: [['author', '2026-11-06T10:01:00Z'], ['github-actions', '2026-11-06T10:00:00Z']],
+    });
+    seed(h, tickAll(fresh()));
+    await run(h);
+
+    assert.equal(h.calls.updates.length, 1);
+    assert.equal(h.calls.statuses[0].state, 'failure');
+  } finally {
+    delete process.env.REVIEWER_LOGINS;
+  }
+});
+
+// --- signing-key -------------------------------------------------------------
+
+test('with a signing key, a head line set to the next commit before pushing still resets', async () => {
+  process.env.SIGNING_KEY = 'k3y';
+  try {
+    // The bot rendered for cafe1234 and signed it; someone then rewrote the line
+    // to the SHA they were about to push. headOf matches the new head, the
+    // signature does not.
+    const h = harness({ getContent: noConfig });
+    const forged = tickAll(withHead(render(LIVE), HEAD));
+    seed(h, forged);
+    await run(h);
+
+    assert.equal(h.calls.updates.length, 1);
+    assert.match(h.calls.updates[0], new RegExp(`^${MARKER}\n<!-- head: ${HEAD} sig: [0-9a-f]{64} -->\n`));
+    assert.equal(h.calls.statuses[0].state, 'failure');
+  } finally {
+    delete process.env.SIGNING_KEY;
+  }
+});
+
+test('with a signing key, a checklist the action signed for this head is kept', async () => {
+  process.env.SIGNING_KEY = 'k3y';
+  try {
+    // First run posts and signs it.
+    const first = harness({ getContent: noConfig });
+    await run(first);
+    const signed = first.calls.comments[0].body;
+
+    const h = harness({ getContent: noConfig, edits: [['reviewer', '2026-11-06T10:01:00Z'], ['github-actions', '2026-11-06T10:00:00Z']] });
+    seed(h, tickAll(signed));
+    await run(h);
+
+    assert.equal(h.calls.updates.length, 0);
+    assert.equal(h.calls.statuses[0].state, 'success');
+  } finally {
+    delete process.env.SIGNING_KEY;
+  }
 });
 
 test('a comment the bot did not write is never graded', async () => {

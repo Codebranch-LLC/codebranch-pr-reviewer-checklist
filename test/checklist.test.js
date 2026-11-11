@@ -8,6 +8,8 @@ const {
   MARKER,
   MAX_ITEM_CHARS,
   itemIds,
+  alwaysApplies,
+  sameItems,
   sanitize,
   parseConfig,
   render,
@@ -17,19 +19,20 @@ const {
 
 const template = fs.readFileSync(path.join(__dirname, '..', 'CHECKLIST.md'), 'utf8');
 const tickAll = (body) => body.replace(/^(\s*-\s*)\[ \]/gm, '$1[x]');
+const extrasConfigLate = (...lines) => parseConfig(['extra-items:', ...lines].join('\n'), template);
 
 test('reads every item ID from CHECKLIST.md', () => {
   const ids = itemIds(template);
-  assert.equal(ids.length, 31);
+  assert.equal(ids.length, 33);
   assert.equal(new Set(ids).size, ids.length);
   assert.equal(ids[0], 'RG-1');
-  assert.equal(ids.at(-1), 'DP-4');
+  assert.equal(ids.at(-1), 'LG-1');
 });
 
 test('a fresh checklist is incomplete', () => {
   const result = evaluate(template, template);
   assert.equal(result.complete, false);
-  assert.equal(result.open.length, 31);
+  assert.equal(result.open.length, 33);
 });
 
 test('ticking every item completes it, with x or X', () => {
@@ -61,16 +64,85 @@ test('removing an item line leaves it unresolved', () => {
 
 test('describe stays within the commit status limit', () => {
   assert.ok(describe(evaluate(template, template)).length <= 140);
-  assert.equal(describe(evaluate(template, tickAll(template))), 'All 31 items done (31 ticked, 0 N/A)');
+  assert.equal(describe(evaluate(template, tickAll(template))), 'All 33 items done (33 ticked, 0 N/A)');
 });
 
-test('N/A reason can sit before or after the item wording', () => {
+// The reason goes where the box was, BEFORE the ID. A reason trailing the item
+// wording used to count, which meant any wording that itself contained "N/A:"
+// (RG-2's once did) closed the item with nobody having written a reason.
+test('an N/A reason counts only where the box was, before the item ID', () => {
   const ticked = tickAll(template);
   const line = ticked.split('\n').find((l) => l.includes('**AC-4**'));
   const after = ticked.replace(line, `${line.replace('[x]', 'N/A:')} no new tables`);
-  const empty = ticked.replace(line, line.replace('[x]', 'N/A:'));
-  assert.equal(evaluate(template, after).complete, true);
-  assert.deepEqual(evaluate(template, empty).open, ['AC-4']);
+  const before = ticked.replace(line, line.replace('[x]', 'N/A: no new tables'));
+  assert.deepEqual(evaluate(template, after).open, ['AC-4']);
+  assert.equal(evaluate(template, before).complete, true);
+});
+
+test('an N/A reason must state a fact in at least three words', () => {
+  const ticked = tickAll(template);
+  const withNa = (reason) => ticked.replace('- [x] **AC-4**', `- N/A: ${reason} **AC-4**`);
+  assert.deepEqual(evaluate(template, withNa('.')).open, ['AC-4']);
+  assert.deepEqual(evaluate(template, withNa('no tables')).open, ['AC-4']);
+  assert.equal(evaluate(template, withNa('no new tables')).complete, true);
+});
+
+test('an item that always applies can never be N/A, in the comment or in config', () => {
+  const always = [...alwaysApplies(template)];
+  assert.deepEqual(always, ['RG-1', 'SR-2', 'SR-3', 'SR-4', 'LG-1']);
+  const allNa = template.replace(/^(\s*-\s*)\[ \]/gm, '$1N/A: nothing to review here');
+  assert.deepEqual(evaluate(template, allNa).open, always);
+  assert.throws(
+    () => parseConfig('not-applicable:\n  LG-1: "We write Spanish here"', template),
+    /LG-1 always applies/,
+  );
+});
+
+test('no item wording contains "N/A:", so no wording can close its own item', () => {
+  for (const id of itemIds(template)) {
+    const line = template.split('\n').find((l) => l.includes(`**${id}**`));
+    assert.doesNotMatch(line, /N\/A:/, id);
+  }
+});
+
+test('tick lines hidden in an HTML comment are never graded', () => {
+  const hidden = itemIds(template).map((id) => `- [x] **${id}**`).join('\n');
+  const body = render(template).replace('# Reviewer checklist', `<!--\n${hidden}\n-->\n# Reviewer checklist`);
+  assert.equal(evaluate(template, body).open.length, itemIds(template).length);
+  // An unclosed comment swallows everything after it: fail closed.
+  const unclosed = tickAll(render(template)).replace('# Reviewer checklist', '<!--\n# Reviewer checklist');
+  assert.equal(evaluate(template, unclosed).missing.length, itemIds(template).length);
+});
+
+test('a bold item ID in a note, a sub-bullet or a reason never stands in for that item', () => {
+  const open = (body) => evaluate(template, body).open;
+  const base = tickAll(render(template)).replace('- [x] **SD-4**', '- [ ] **SD-4**');
+  // A sub-bullet that mentions SD-4 and is ticked.
+  const sub = base.replace(/(\*\*SR-1\*\*.*\n)/, '$1  - [x] traced auth; **SD-4** decrypt path checked\n');
+  assert.deepEqual(open(sub), ['SD-4']);
+  // An N/A reason on SD-3 that names SD-4 in bold: the line reads as a second
+  // SD-4 line, so SD-4 is ambiguous (open) and SD-3 has no line (missing).
+  const reason = evaluate(template, base.replace('- [x] **SD-3**', '- N/A: decryption covered by **SD-4** **SD-3**'));
+  assert.deepEqual(reason.open, ['SD-4']);
+  assert.deepEqual(reason.missing, ['SD-3']);
+  // A note after the ID is just text, and an open box stays open.
+  const note = base.replace('- [x] **RG-2** Admin', '- [ ] **RG-2** (unverified, see **SD-4**) Admin');
+  assert.deepEqual(open(note), ['RG-2', 'SD-4']);
+});
+
+test('an item ID on two item lines is ambiguous and counts as open', () => {
+  const body = tickAll(render(template)).replace('- [x] **AC-1**', '- [ ] **AC-1**');
+  const doubled = `${body}\n- [x] **AC-1** done`;
+  assert.deepEqual(evaluate(template, doubled).open, ['AC-1']);
+});
+
+test('sameItems notices a comment posted before the item set changed', () => {
+  const old = render(template).split('\n').filter((l) => !l.includes('**LG-1**')).join('\n');
+  assert.equal(sameItems(template, render(template)), true);
+  assert.equal(sameItems(template, old), false);
+  const config = extrasConfigLate('  REPO-1: "x"');
+  assert.equal(sameItems(template, render(template), config), false);
+  assert.equal(sameItems(template, render(template, config), config), true);
 });
 
 // Every name here is one a repository is meant to supply through `in-this-repo`,
@@ -140,7 +212,7 @@ test('render adds hints and fills in repo-wide N/A', () => {
   assert.ok(body.startsWith(MARKER));
   assert.equal(lines[ac1 + 1], '  - _In this repo: `GuardedRouter::requires`_');
   assert.match(lines.find((l) => l.includes('**AC-4**')), /^- N\/A: No database _\(repo setting\)_ \*\*AC-4\*\*/);
-  assert.equal(evaluate(template, body, config).open.length, 30);
+  assert.equal(evaluate(template, body, config).open.length, 32);
   assert.equal(render(template), `${MARKER}\n${template}`);
 });
 

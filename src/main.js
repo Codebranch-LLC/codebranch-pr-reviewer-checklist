@@ -1,8 +1,20 @@
 'use strict';
 
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { MARKER, parseConfig, render, withHead, headOf, evaluate, describe, truncate } = require('./checklist');
+const {
+  MARKER,
+  parseConfig,
+  render,
+  withHead,
+  headOf,
+  signatureOf,
+  sameItems,
+  evaluate,
+  describe,
+  truncate,
+} = require('./checklist');
 
 // Each of these describes the CONSUMING repository, not the checklist, so each
 // is an action input (see action.yml) with the value every repository had before
@@ -13,6 +25,17 @@ const { MARKER, parseConfig, render, withHead, headOf, evaluate, describe, trunc
 const STATUS_CONTEXT = process.env.STATUS_CONTEXT || 'reviewer-checklist';
 const BOT_LOGIN = process.env.BOT_LOGIN || 'github-actions[bot]';
 const CONFIG_PATH = process.env.CONFIG_PATH || '.github/reviewer-checklist.yml';
+
+// Who may fill in the checklist. Empty means anyone but the PR author, which is
+// what every repository had before the input existed. Set, it names the
+// reviewer accounts -- typically the account a CI-run review agent edits with --
+// and an edit by any other account resets the checklist exactly like an author
+// edit. It is what makes "an independent reviewer" something the action checks
+// rather than something the author asserts: an author who can start the review
+// agent can also choose the account it edits with, unless that account is fixed
+// here, on the default branch.
+const reviewerLogins = () =>
+  new Set((process.env.REVIEWER_LOGINS || '').split(/[\s,]+/).filter(Boolean).map((l) => actor(l)));
 
 // WHERE THE CHECKLIST TEXT COMES FROM, and why it is not simply the copy next to
 // this file.
@@ -77,14 +100,16 @@ async function findChecklistComment(github, owner, repo, issueNumber) {
 // sides are compared without it.
 const actor = (login) => (login || '').replace(/\[bot\]$/, '');
 
-// Has the PR author edited the comment since the bot last wrote it?
+// Has anyone who may not fill in the checklist edited it since the bot last
+// wrote it? Returns 'author-edit', 'unlisted-edit' (an account outside
+// `reviewer-logins`, when that is set) or null.
 //
 // Read from the comment's edit history, newest first, rather than from the
 // event: a run must catch an author edit even when the run that edit started
 // was cancelled, or when a reviewer's edit landed on top of it. The history
 // lists the creation as an edit once the comment has been edited at all; a
 // comment that was never edited has an empty history and nothing to catch.
-async function authorEditedSinceBot(github, comment, prAuthor) {
+async function disallowedEditSinceBot(github, comment, prAuthor, allowed) {
   const author = actor(prAuthor);
   const bot = actor(BOT_LOGIN);
   let after = null;
@@ -106,10 +131,11 @@ async function authorEditedSinceBot(github, comment, prAuthor) {
     const nodes = [...edits.nodes].sort((a, b) => Date.parse(b.editedAt) - Date.parse(a.editedAt));
     for (const edit of nodes) {
       const editor = actor(edit.editor?.login);
-      if (editor === bot) return false;
-      if (editor === author) return true;
+      if (editor === bot) return null;
+      if (editor === author) return { reason: 'author-edit', editor };
+      if (allowed.size && !allowed.has(editor)) return { reason: 'unlisted-edit', editor };
     }
-    if (!edits.pageInfo.hasNextPage) return false;
+    if (!edits.pageInfo.hasNextPage) return null;
     after = edits.pageInfo.endCursor;
   }
 }
@@ -134,7 +160,9 @@ async function loadConfigText(github, owner, repo, ref) {
 
 module.exports = async ({ github, context, core }) => {
   const { text: template, live: templateIsLive } = await loadTemplate(github, core);
-  const resetOnPush = process.env.RESET_ON_PUSH === 'true';
+  // On unless explicitly turned off: without it, a checklist completed for one
+  // commit is re-stamped green on every commit pushed after it.
+  const resetOnPush = process.env.RESET_ON_PUSH !== 'false';
 
   const { owner, repo } = context.repo;
   const number = context.payload.pull_request?.number ?? context.payload.issue?.number;
@@ -159,7 +187,19 @@ module.exports = async ({ github, context, core }) => {
     core.setFailed(message);
     return;
   }
-  const freshBody = withHead(render(template, config, CONFIG_PATH), pr.head.sha);
+  // Signs the head line when the repository supplies a key, binding the SHA to
+  // this pull request so a signature cannot be copied from another one.
+  const signingKey = process.env.SIGNING_KEY || '';
+  const sign = (sha) =>
+    signingKey &&
+    crypto.createHmac('sha256', signingKey).update(`${owner}/${repo}#${number}@${sha}`).digest('hex');
+  const signatureValid = (body) => {
+    if (!signingKey) return true;
+    const expected = Buffer.from(sign(headOf(body) || ''), 'hex');
+    const actual = Buffer.from(signatureOf(body) || '', 'hex');
+    return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+  };
+  const freshBody = withHead(render(template, config, CONFIG_PATH), pr.head.sha, sign(pr.head.sha));
 
   let comment = await findChecklistComment(github, owner, repo, number);
 
@@ -171,7 +211,8 @@ module.exports = async ({ github, context, core }) => {
   // the size of every cancelled run; a rule that inspects the state does not.
   let resetReason;
   if (comment) {
-    if (await authorEditedSinceBot(github, comment, pr.user.login)) {
+    const disallowed = await disallowedEditSinceBot(github, comment, pr.user.login, reviewerLogins());
+    if (disallowed?.reason === 'author-edit') {
       // Never "revert" to the body before the edit. That body is not known to
       // be the bot's: the author can stage it with an earlier edit (one that
       // removed the marker, so no run saw it, or one whose run was cancelled)
@@ -183,10 +224,22 @@ module.exports = async ({ github, context, core }) => {
         `@${pr.user.login} authored this PR and cannot fill in the reviewer checklist. ` +
           'Their edit reset the checklist; the reviewer must complete it again.',
       );
-    } else if (resetOnPush && headOf(comment.body) !== pr.head.sha) {
-      // Covers the push whose `synchronize` run was cancelled, and a comment
-      // written before the head line existed (reset once, rather than guess).
+    } else if (disallowed) {
+      resetReason = 'unlisted-edit';
+      core.warning(
+        `@${disallowed.editor} is not one of this repository's reviewer-logins and cannot fill in ` +
+          'the reviewer checklist. Their edit reset the checklist; the reviewer must complete it again.',
+      );
+    } else if (resetOnPush && (headOf(comment.body) !== pr.head.sha || !signatureValid(comment.body))) {
+      // Covers the push whose `synchronize` run was cancelled, a comment written
+      // before the head line existed (reset once, rather than guess), and a head
+      // line someone other than this action wrote.
       resetReason = 'new-head';
+    } else if (!sameItems(template, comment.body, config)) {
+      // The shared checklist or this repository's extra items changed since the
+      // comment was posted. Its reviewer has no line for a new item and may not
+      // add one, so the comment is re-posted rather than left red for good.
+      resetReason = 'items-changed';
     }
   }
 
