@@ -8,8 +8,26 @@ inputs:
     description: Token used to comment and set the commit status.
     default: ${{ github.token }}
   reset-on-push:
-    description: Reset the checklist to unticked whenever new commits are pushed.
-    default: 'false'
+    description: >-
+      Reset the checklist to unticked whenever new commits are pushed, so the
+      review always covers the head commit. Set 'false' to keep ticks across
+      pushes; the status then certifies a review happened, not that it covered
+      the final commit.
+    default: 'true'
+  reviewer-logins:
+    description: >-
+      Comma- or space-separated logins allowed to fill in the checklist, such as
+      the account a CI-run review agent edits with. An edit by any other account
+      resets the checklist, as an edit by the PR author always does. Empty means
+      anyone but the PR author may fill it in.
+    default: ''
+  signing-key:
+    description: >-
+      Secret used to sign the head commit recorded in the checklist comment, so
+      nobody can pre-set it to a commit they are about to push and skip the reset.
+      Pass a repository secret, for example secrets.REVIEWER_CHECKLIST_KEY. Empty
+      leaves the line unsigned.
+    default: ''
   # The three below are facts about the CONSUMING repository, not about the
   # checklist, so they are inputs rather than constants in src/main.js. The
   # defaults are what every repository got before they existed, so nothing
@@ -60,6 +78,8 @@ runs:
       env:
         ACTION_PATH: ${{ github.action_path }}
         RESET_ON_PUSH: ${{ inputs.reset-on-push }}
+        REVIEWER_LOGINS: ${{ inputs.reviewer-logins }}
+        SIGNING_KEY: ${{ inputs.signing-key }}
         STATUS_CONTEXT: ${{ inputs.status-context }}
         BOT_LOGIN: ${{ inputs.bot-login }}
         CONFIG_PATH: ${{ inputs.config-path }}
