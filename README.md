@@ -175,6 +175,8 @@ Item lines must keep the form `- [ ] **XX-n** text` — two capital letters, a d
 
 The checklist is derived from the "+2 Code Reviewer Checklist" from PLC: Code Review Excellence (its last slide). These items from the source are deliberately not carried over: its C/C++ API-misuse, unsigned-typing, compiler-flag/hardening and fault-injection items. They do not apply to a memory-safe, managed stack. A repository that ships C, C++ or hand-written assembly must add them back as `extra-items`, not leave them implicit.
 
+Section 11, Performance (PF-1, PF-2), was not in the source. It came from incidents in a consuming repository: a navigation-bar change that pulled in an idle-tab poll of an expensive endpoint, and chat queries that reached seconds without a query plan ever being shown. CR-3 did not catch the first one, because the per-item queries were in code the PR never touched. The checklist keeps only the part a reviewer has to judge: whether plan evidence is real (PF-1), and whether a cost increase or a raised baseline is acceptable (PF-2). Measurable limits, such as requests per idle hour or statements per route, belong in that repository's CI, not here.
+
 To release, tag the merge commit on `main` with a new version and push the tag:
 
 ```sh

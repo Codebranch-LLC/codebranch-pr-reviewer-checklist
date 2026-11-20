@@ -23,16 +23,16 @@ const extrasConfigLate = (...lines) => parseConfig(['extra-items:', ...lines].jo
 
 test('reads every item ID from CHECKLIST.md', () => {
   const ids = itemIds(template);
-  assert.equal(ids.length, 33);
+  assert.equal(ids.length, 35);
   assert.equal(new Set(ids).size, ids.length);
   assert.equal(ids[0], 'RG-1');
-  assert.equal(ids.at(-1), 'LG-1');
+  assert.equal(ids.at(-1), 'PF-2');
 });
 
 test('a fresh checklist is incomplete', () => {
   const result = evaluate(template, template);
   assert.equal(result.complete, false);
-  assert.equal(result.open.length, 33);
+  assert.equal(result.open.length, 35);
 });
 
 test('ticking every item completes it, with x or X', () => {
@@ -64,7 +64,7 @@ test('removing an item line leaves it unresolved', () => {
 
 test('describe stays within the commit status limit', () => {
   assert.ok(describe(evaluate(template, template)).length <= 140);
-  assert.equal(describe(evaluate(template, tickAll(template))), 'All 33 items done (33 ticked, 0 N/A)');
+  assert.equal(describe(evaluate(template, tickAll(template))), 'All 35 items done (35 ticked, 0 N/A)');
 });
 
 // The reason goes where the box was, BEFORE the ID. A reason trailing the item
@@ -96,6 +96,62 @@ test('an item that always applies can never be N/A, in the comment or in config'
     () => parseConfig('not-applicable:\n  LG-1: "We write Spanish here"', template),
     /LG-1 always applies/,
   );
+});
+
+test('the checklist has eleven sections, ending with Performance (PF-1, PF-2)', () => {
+  const sections = template.match(/^## \d+\. .+$/gm);
+  assert.equal(sections.length, 11);
+  assert.equal(sections.at(-1), '## 11. Performance');
+  const performance = template.slice(template.indexOf('## 11. Performance'));
+  assert.deepEqual(itemIds(performance), ['PF-1', 'PF-2']);
+});
+
+// PF-1 and PF-2 can be N/A ("N/A only when ..."), unlike the always-applies
+// items, and each one alone keeps the status red until it is answered.
+test('PF-1 and PF-2 render, can be ticked or marked N/A, and keep the status red while open', () => {
+  const body = render(template);
+  for (const id of ['PF-1', 'PF-2']) {
+    assert.equal(body.split('\n').filter((l) => l.startsWith(`- [ ] **${id}** `)).length, 1, id);
+  }
+  assert.ok(!alwaysApplies(template).has('PF-1') && !alwaysApplies(template).has('PF-2'));
+
+  const ticked = tickAll(body);
+  assert.equal(evaluate(template, ticked).complete, true);
+
+  for (const id of ['PF-1', 'PF-2']) {
+    const open = ticked.replace(`- [x] **${id}**`, `- [ ] **${id}**`);
+    const result = evaluate(template, open);
+    assert.equal(result.complete, false, id);
+    assert.deepEqual(result.open, [id]);
+    assert.equal(describe(result), `1 open: ${id}`);
+
+    const na = (reason) => ticked.replace(`- [x] **${id}**`, `- N/A: ${reason} **${id}**`);
+    const good = evaluate(template, na('the diff changes no database query'));
+    assert.equal(good.complete, true, id);
+    assert.equal(good.notApplicable, 1);
+    assert.deepEqual(evaluate(template, na('none')).open, [id]);
+    assert.deepEqual(evaluate(template, na('<reason>')).open, [id]);
+  }
+
+  const both = ticked.replace('- [x] **PF-1**', '- [ ] **PF-1**').replace('- [x] **PF-2**', '- [ ] **PF-2**');
+  assert.deepEqual(evaluate(template, both).open, ['PF-1', 'PF-2']);
+});
+
+test('PF items accept in-this-repo hints and not-applicable settings', () => {
+  const config = parseConfig(
+    'in-this-repo:\n  PF-2: "the request census in CI"\nnot-applicable:\n  PF-1: "No database in this repository"',
+    template,
+  );
+  const lines = render(template, config).split('\n');
+  const pf2 = lines.findIndex((l) => l.includes('**PF-2**'));
+  assert.equal(lines[pf2 + 1], '  - _In this repo: the request census in CI_');
+  assert.match(lines.find((l) => l.includes('**PF-1**')), /^- N\/A: No database in this repository _\(repo setting\)_ \*\*PF-1\*\*/);
+  const result = evaluate(template, tickAll(render(template, config)), config);
+  assert.equal(result.complete, true);
+  assert.equal(result.notApplicable, 1);
+  // A comment posted before section 11 existed is re-posted.
+  const old = render(template).split('\n').filter((l) => !/\*\*PF-\d\*\*/.test(l)).join('\n');
+  assert.equal(sameItems(template, old), false);
 });
 
 test('no item wording contains "N/A:", so no wording can close its own item', () => {
@@ -212,7 +268,7 @@ test('render adds hints and fills in repo-wide N/A', () => {
   assert.ok(body.startsWith(MARKER));
   assert.equal(lines[ac1 + 1], '  - _In this repo: `GuardedRouter::requires`_');
   assert.match(lines.find((l) => l.includes('**AC-4**')), /^- N\/A: No database _\(repo setting\)_ \*\*AC-4\*\*/);
-  assert.equal(evaluate(template, body, config).open.length, 32);
+  assert.equal(evaluate(template, body, config).open.length, 34);
   assert.equal(render(template), `${MARKER}\n${template}`);
 });
 
