@@ -4,6 +4,8 @@
 
 You are reviewing this pull request. Complete every item below, then decide whether the PR can be approved.
 
+**One exhaustive review pass.** Find everything in round 1. Before you post your first review, read every file the PR adds, changes or deletes, check every item against all of them, and list every blocker you can find in that one review. Do not stop at the first blockers or hold some back for a later round. Later rounds only verify that the listed blockers are fixed and that the new commits add no new problem. If you later find a blocker in code that has not changed since round 1, it is a miss of round 1. Still raise it. The author is expected to self-check against this checklist, mutation-check their tests, and push once per round.
+
 **Inputs.** Fetch these yourself from the hosting platform, for the PR's current head commit:
 
 - the diff from base to head
